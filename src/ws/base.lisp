@@ -199,6 +199,17 @@
 
 (defgeneric send-handshake-request (ws &key callback))
 
+(defun timeout-error-p (condition)
+  "Check if CONDITION is an I/O timeout error that should be retried."
+  #+sbcl (typep condition 'sb-sys:io-timeout)
+  #-sbcl
+  (loop for (pkg-name . sym-name) in '(("USOCKET" . "TIMEOUT-ERROR")
+                                       ("CCL" . "COMMUNICATION-DEADLINE-EXPIRED"))
+        for pkg = (find-package pkg-name)
+        for sym = (when pkg (find-symbol sym-name pkg))
+        when (and sym (typep condition sym))
+        return t))
+
 (defun read-websocket-frame (stream)
   (let ((buf (make-array 2 :element-type '(unsigned-byte 8)))
         (extended-buf (make-array 8 :element-type '(unsigned-byte 8)))
@@ -206,13 +217,14 @@
     (block nil
       (tagbody retry
          (let ((read-bytes (handler-case (read-sequence buf stream)
-                             (error ()
-                               (incf read-seq-count)
-			       ;; If the stream is already closed or an infinite loop has started,
-			       ;; return nil instead of infinite retry
-			       (if (or (not (open-stream-p stream))
-				       (> read-seq-count 1))
-				   (return nil))
+                             (error (e)
+                               (unless (timeout-error-p e)
+                                 (incf read-seq-count))
+                               ;; If the stream is already closed or an infinite loop has started,
+                               ;; return nil instead of infinite retry
+                               (when (or (not (open-stream-p stream))
+                                         (< 1 read-seq-count))
+                                 (return nil))
                                ;; Retry when I/O timeout error
                                (go retry)))))
            (setf read-seq-count 0)
