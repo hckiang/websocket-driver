@@ -171,7 +171,7 @@
                                                                               (uiop:native-namestring ca-path)
                                                                               :default))))
                            ;; TODO: certificate files
-                           (cl+ssl:with-global-context (ctx :auto-free-p t)
+                           (cl+ssl:with-global-context (ctx)
                              (cl+ssl:make-ssl-client-stream stream
                                                             :hostname (uri-host uri)
                                                             :verify (if verify :optional nil)))))
@@ -188,6 +188,7 @@
 		    (loop for frame = (read-websocket-frame stream)
                           while frame
                           do (parse client frame))
+                 ;; When close-connection kills this thread the unwind-protect may be called again.
                  (close-connection client)))
              :name "websocket client read thread"
              :initial-bindings `((*standard-output* . ,*standard-output*)
@@ -265,14 +266,15 @@
       (funcall callback))))
 
 (defmethod close-connection ((client client) &optional reason code)
-  (ignore-errors (close (socket client)))
-  (setf (ready-state client) :closed)
-  (let ((thread (read-thread client)))
-    (when thread
-      (if (and (bt2::threadp thread)
-	       (bt2::thread-alive-p thread)
-	       (not (eq (bt2:current-thread) thread)))
-	  (bt2::destroy-thread thread))
-      (setf (read-thread client) nil)))
-  (emit :close client :code code :reason reason)
-  t)
+  (unless (eq (ready-state client) :closed)
+    (ignore-errors (close (socket client)))
+    (setf (ready-state client) :closed)
+    (let ((thread (read-thread client)))
+      (when thread
+        (if (and (bt2::threadp thread)
+	         (bt2::thread-alive-p thread)
+	         (not (eq (bt2:current-thread) thread)))
+	    (bt2::destroy-thread thread))
+        (setf (read-thread client) nil)))
+    (emit :close client :code code :reason reason)
+    t))
